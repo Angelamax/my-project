@@ -5,7 +5,9 @@ export default async function handler(req, res) {
   const startTime = Date.now();
   const author = "AngelaImut";
 
-  // 1. Menangkap Input
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST');
+
   const text = req.query.text || req.query.q;
   const voice = req.query.voice || 'coral';
 
@@ -14,7 +16,7 @@ export default async function handler(req, res) {
     return res.status(400).json({
       success: false,
       author: author,
-      message: "Masukkan parameter 'text'! Contoh: ?text=Halo cantik&voice=onyx",
+      message: "Masukkan parameter 'text'!",
       timestamp: new Date().toISOString(),
       responseTime: `${Date.now() - startTime}ms`
     });
@@ -36,7 +38,7 @@ export default async function handler(req, res) {
     };
 
     if (!conf.voice.includes(voice.toLowerCase())) {
-      throw new Error(`Voice tidak tersedia. Pilihan: ${conf.voice.join(', ')}`);
+      throw new Error(`Voice tidak tersedia.`);
     }
 
     const form = new FormData();
@@ -48,8 +50,10 @@ export default async function handler(req, res) {
     const response = await axios.post('https://www.openai.fm/api/generate', form, {
       headers: {
         ...form.getHeaders(),
-        origin: 'https://www.openai.fm',
-        referer: 'https://www.openai.fm/'
+        // PENAMBAHAN USER-AGENT UNTUK MENGATASI ERROR 422
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'origin': 'https://www.openai.fm',
+        'referer': 'https://www.openai.fm/'
       },
       responseType: 'arraybuffer',
       maxBodyLength: Infinity,
@@ -61,18 +65,16 @@ export default async function handler(req, res) {
     // [AKHIR ZONA UTUH]
     // =====================================================================
 
-    // 2. Format Response Sukses (Audio Output)
     res.setHeader('Content-Type', 'audio/mpeg');
     res.setHeader('Content-Disposition', 'inline; filename="tts.mp3"');
     return res.send(results);
 
   } catch (error) {
-    // 3. Format Response Error
     res.setHeader('Content-Type', 'application/json');
     return res.status(500).json({
       success: false,
       author: author,
-      error: error.message,
+      error: error.response?.data?.message || error.message,
       timestamp: new Date().toISOString(),
       responseTime: `${Date.now() - startTime}ms`
     });
