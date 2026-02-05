@@ -1,0 +1,101 @@
+import axios from "axios";
+export default async function handler(req, res) {
+  const startTime = Date.now();
+  const author = "AngelaImut";
+  // 1. Konfigurasi Header Standar
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST');
+  res.setHeader('Content-Type', 'application/json');
+  // Input Parameter
+  const { type, email } = req.query;
+  try {
+    // =====================================================================
+    // [ZONA UTUH] - LOGIKA SCRAPER EMAILNATOR (CR Ponta Sensei)
+    // =====================================================================
+    const client = axios.create({
+      baseURL: "https://www.emailnator.com",
+      withCredentials: true,
+      headers: {
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "accept": "application/json, text/plain, */*"
+      }
+    });
+    async function getSession() {
+      const home = await client.get("/");
+      const cookies = home.headers["set-cookie"].join("; ");
+      const xsrf = decodeURIComponent(cookies.match(/XSRF-TOKEN=([^;]+)/)[1]);
+      return { cookies, xsrf };
+    }
+    function auth(session) {
+      return {
+        headers: {
+          cookie: session.cookies,
+          "x-xsrf-token": session.xsrf,
+          "x-requested-with": "XMLHttpRequest",
+          "content-type": "application/json"
+        }
+      };
+    }
+    let results;
+    if (type === "generate") {
+      // AKSI: Membuat Email Baru
+      const session = await getSession();
+      const response = await client.post(
+        "/generate-email",
+        { email: ["plusGmail", "dotGmail", "googleMail"] },
+        auth(session)
+      );
+      results = response.data;
+    } else if (type === "inbox") {
+      // AKSI: Cek Inbox
+      if (!email) throw new Error("Parameter 'email' wajib diisi untuk cek inbox!");      
+      const session = await getSession();
+      const inboxRes = await client.post(
+        "/message-list",
+        { email },
+        auth(session)
+      );      
+      const inbox = inboxRes.data.messageData || [];
+      const mail = inbox.find(m => m.messageID !== "ADSVPN");      
+      if (!mail) {
+        results = { message: "Belum ada pesan masuk." };
+      } else {
+        // Ambil detail isi HTML email
+        const htmlRes = await client.post(
+          "/message-list",
+          { email, messageID: mail.messageID },
+          auth(session)
+        );
+        results = {
+          messageID: mail.messageID,
+          from: mail.from,
+          subject: mail.subject,
+          time: mail.time,
+          html: htmlRes.data
+        };
+      }
+    } else {
+      throw new Error("Tentukan parameter type! (generate/inbox)");
+    }
+    // =====================================================================
+    // [AKHIR ZONA UTUH]
+    // =====================================================================
+    // 2. Format Response Sukses
+    return res.status(200).json({
+      success: true,
+      author: author,
+      result: results,
+      timestamp: new Date().toISOString(),
+      responseTime: `${Date.now() - startTime}ms`
+    });
+  } catch (error) {
+    // 3. Format Response Error
+    return res.status(500).json({
+      success: false,
+      author: author,
+      error: error.message,
+      timestamp: new Date().toISOString(),
+      responseTime: `${Date.now() - startTime}ms`
+    });
+  }
+}
