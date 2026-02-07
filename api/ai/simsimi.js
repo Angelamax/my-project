@@ -4,28 +4,20 @@ export default async function handler(req, res) {
   const startTime = Date.now();
   const author = "AngelaImut";
 
-  // 1. Header Standar
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST');
   res.setHeader('Content-Type', 'application/json');
 
-  const text = req.query.text || req.query.q;
+  const text = req.query.text || "halo";
 
-  if (!text) {
-    return res.status(400).json({
-      success: false,
-      author: author,
-      message: "Masukkan parameter 'text'!",
-      timestamp: new Date().toISOString(),
-      responseTime: `${Date.now() - startTime}ms`
-    });
-  }
+  // Debug Log Container
+  let debugLog = {
+    token_status: "unknown",
+    chat_response_raw: null,
+    claim_point_attempt: "not_triggered",
+    claim_point_response: null
+  };
 
   try {
-    // =====================================================================
-    // [ZONA UTUH] - LOGIKA SIMI PRO (Class & Config)
-    // =====================================================================
-    
     class SimiPro {
         constructor() {
             this.config = {
@@ -45,16 +37,22 @@ export default async function handler(req, res) {
                     refresh_token: this.config.refreshToken
                 });
                 this.config.accessToken = res.data.access_token;
+                debugLog.token_status = "refreshed_success";
                 return res.data.access_token;
-            } catch (err) { return null; }
+            } catch (err) { 
+                debugLog.token_status = `refreshed_failed: ${err.message}`;
+                return null; 
+            }
         }
 
         async claimPoint() {
             if (!this.config.accessToken) await this.refreshAuth();
+            
             const commonPayload = {
                 uid: this.config.uid, av: "9.2.6", os: "a", lc: "id", cc: "KR", 
                 tz: "Asia/Seoul", logUID: this.config.uid.toString(), reg_now_days: 0
             };
+            
             const headers = {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${this.config.accessToken}`,
@@ -63,12 +61,19 @@ export default async function handler(req, res) {
             };
 
             try {
-                // Step 1: Trigger Cooldown
+                debugLog.claim_point_attempt = "triggered";
+                // Step 1: Cooldown
                 await axios.post('https://kube-appserver.simsimi.com:30443/boost_chat/free_point_cooldown', commonPayload, { headers });
-                // Step 2: Klaim Point
+                
+                // Step 2: Claim
                 const { data } = await axios.post('https://kube-appserver.simsimi.com:30443/boost_chat/claim_free_point', commonPayload, { headers });
+                
+                debugLog.claim_point_response = data; // Ini yang mau kita lihat
                 return data;
-            } catch (e) { return null; }
+            } catch (e) { 
+                debugLog.claim_point_response = { error: e.message, status: e.response?.status, data: e.response?.data };
+                return null; 
+            }
         }
 
         async chat(msgText) {
@@ -88,68 +93,46 @@ export default async function handler(req, res) {
                         'Authorization': `Bearer ${this.config.accessToken}`,
                         'X-Client-Platform': 'web'
                     },
-                    responseType: 'text' // Penting untuk parsing stream manual
+                    responseType: 'text' 
                 });
+
+                debugLog.chat_response_raw = res.data; // Simpan respon asli
 
                 // Deteksi Error 402 (Point Habis)
                 if (res.data.includes('data:402')) {
-                    await this.claimPoint(); // Auto Refill
-                    return { 
-                        status: false, 
-                        is_refilled: true,
-                        message: "Point habis, tapi sistem sudah otomatis me-refill. Silakan kirim pesan yang sama sekali lagi!" 
-                    };
+                    await this.claimPoint(); // Coba refill
+                    // Kita tidak return pesan cantik, tapi return data mentah biar ketahuan
+                    return { status: false, raw: res.data, type: "NEEDS_REFILL" };
                 }
 
-                // Parsing Stream Data
                 const match = res.data.split('\n').find(l => l.startsWith('data: {'));
                 if (match) {
                     const json = JSON.parse(match.replace('data: ', ''));
                     return { status: true, result: json.content };
                 }
-
-                return { status: false, raw: res.data };
+                return { status: false, raw: res.data, type: "UNKNOWN_FORMAT" };
 
             } catch (err) {
-                // Auto Retry jika token expired (401)
-                if (err.response?.status === 401) {
-                    await this.refreshAuth();
-                    // Kita coba rekursif sekali saja, tapi hati-hati infinite loop di serverless
-                    // Untuk keamanan di serverless, kita return error suruh user refresh
-                    return { status: false, message: "Token Expired. Silakan refresh." };
-                }
-                return { status: false, message: err.message };
+                return { status: false, error: err.message, stack: err.response?.data };
             }
         }
     }
 
-    // Eksekusi
     const simi = new SimiPro();
-    const response = await simi.chat(text);
-    // =====================================================================
-    // [AKHIR ZONA UTUH]
-    // =====================================================================
+    const result = await simi.chat(text);
 
-    // 2. Format Response Sukses/Gagal
-    // Kita menyesuaikan status code berdasarkan hasil logic simi
-    const statusCode = response.status ? 200 : (response.is_refilled ? 429 : 500);
-
-    return res.status(statusCode).json({
-      success: response.status,
+    return res.status(200).json({
+      success: result.status,
       author: author,
-      result: response.result || null,
-      message: response.message || null, // Pesan error/refill muncul di sini
-      timestamp: new Date().toISOString(),
-      responseTime: `${Date.now() - startTime}ms`
+      data: result,
+      debug_trace: debugLog, // INI KUNCINYA
+      timestamp: new Date().toISOString()
     });
 
   } catch (error) {
     return res.status(500).json({
       success: false,
-      author: author,
-      error: error.message,
-      timestamp: new Date().toISOString(),
-      responseTime: `${Date.now() - startTime}ms`
+      error: error.message
     });
   }
 }
